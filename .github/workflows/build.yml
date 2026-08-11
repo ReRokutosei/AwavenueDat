@@ -1,0 +1,184 @@
+name: Build AWAvenue GeoSite
+
+on:
+  schedule:
+    # Check for upstream changes once a day at 04:00 UTC.
+    - cron: "0 4 * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      SOURCE_URL: https://raw.githubusercontent.com/TG-Twilight/AWAvenue-Ads-Rule/main/AWAvenue-Ads-Rule.txt
+      RELEASE_TAG: latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download AWAvenue rules
+        run: |
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 2 \
+            --user-agent "Awavenue-Geosite-Builder" \
+            "$SOURCE_URL" \
+            --output AWAvenue-Ads-Rule.txt
+
+      - name: Calculate source SHA-256
+        id: source
+        run: |
+          SHA256="$(sha256sum AWAvenue-Ads-Rule.txt | cut -d ' ' -f 1)"
+
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+          echo "AWAvenue source SHA-256:"
+          echo "$SHA256"
+
+      - name: Check current release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Release '$RELEASE_TAG' does not exist."
+            exit 0
+          fi
+
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+
+          gh release view "$RELEASE_TAG" \
+            --json body \
+            --jq '.body' > release-body.txt
+
+          echo "Current release information:"
+          cat release-body.txt
+
+      - name: Check whether source has changed
+        id: change
+        run: |
+          CURRENT_SHA="${{ steps.source.outputs.sha256 }}"
+
+          if [ "${{ steps.release.outputs.exists }}" = "true" ]; then
+            PREVIOUS_SHA="$(
+              sed -n 's/^Source SHA-256: *//p' release-body.txt |
+              head -n 1
+            )"
+
+            echo "Previous source SHA-256: ${PREVIOUS_SHA:-<none>}"
+          else
+            PREVIOUS_SHA=""
+            echo "No previous release found."
+          fi
+
+          if [ "$CURRENT_SHA" = "$PREVIOUS_SHA" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "AWAvenue source has not changed."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "AWAvenue source has changed."
+          fi
+
+      - name: Set up Python
+        if: steps.change.outputs.changed == 'true'
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.x"
+
+      - name: Compile GeoSite DAT
+        if: steps.change.outputs.changed == 'true'
+        run: |
+          python compiler.py \
+            AWAvenue-Ads-Rule.txt \
+            awavenue.dat \
+            --code ADS
+
+      - name: Validate output
+        if: steps.change.outputs.changed == 'true'
+        run: |
+          SIZE="$(stat -c '%s' awavenue.dat)"
+
+          echo "awavenue.dat size: ${SIZE} bytes"
+
+          if [ "$SIZE" -lt 5000 ]; then
+            echo "::error::awavenue.dat is abnormally small."
+            exit 1
+          fi
+
+      - name: Generate DAT SHA-256
+        if: steps.change.outputs.changed == 'true'
+        id: dat
+        run: |
+          SHA256="$(sha256sum awavenue.dat | cut -d ' ' -f 1)"
+
+          sha256sum awavenue.dat > awavenue.dat.sha256
+
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+          echo "DAT SHA-256:"
+          echo "$SHA256"
+
+      - name: Create or update latest Release
+        if: steps.change.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SOURCE_SHA="${{ steps.source.outputs.sha256 }}"
+          DAT_SHA="${{ steps.dat.outputs.sha256 }}"
+
+          NOTES="AWAvenue Ads GeoSite DAT
+
+          Source:
+          ${SOURCE_URL}
+
+          Source SHA-256:
+          ${SOURCE_SHA}
+
+          DAT SHA-256:
+          ${DAT_SHA}
+
+          GeoSite tag:
+          ADS"
+
+          if [ "${{ steps.release.outputs.exists }}" = "true" ]; then
+            echo "Updating existing release '$RELEASE_TAG'..."
+
+            gh release delete-asset \
+              "$RELEASE_TAG" \
+              awavenue.dat \
+              --yes || true
+
+            gh release delete-asset \
+              "$RELEASE_TAG" \
+              awavenue.dat.sha256 \
+              --yes || true
+
+            gh release upload \
+              "$RELEASE_TAG" \
+              awavenue.dat \
+              awavenue.dat.sha256 \
+              --clobber
+
+            gh release edit \
+              "$RELEASE_TAG" \
+              --title "AWAvenue Ads GeoSite" \
+              --notes "$NOTES"
+          else
+            echo "Creating release '$RELEASE_TAG'..."
+
+            gh release create \
+              "$RELEASE_TAG" \
+              awavenue.dat \
+              awavenue.dat.sha256 \
+              --title "AWAvenue Ads GeoSite" \
+              --notes "$NOTES"
+          fi
