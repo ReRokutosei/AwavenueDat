@@ -137,17 +137,13 @@ jobs:
 
           NOTES="AWAvenue Ads GeoSite DAT
 
-          Source:
-          ${SOURCE_URL}
+          Source: ${SOURCE_URL}
 
-          Source SHA-256:
-          ${SOURCE_SHA}
+          Source SHA-256: ${SOURCE_SHA}
 
-          DAT SHA-256:
-          ${DAT_SHA}
+          DAT SHA-256: ${DAT_SHA}
 
-          GeoSite tag:
-          ADS"
+          GeoSite tag: ADS"
 
           if [ "${{ steps.release.outputs.exists }}" = "true" ]; then
             echo "Updating existing release '$RELEASE_TAG'..."
